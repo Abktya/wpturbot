@@ -279,6 +279,12 @@ async def _handle_async(sender: str, text: str):
                 )
             messages = format_results(tours, float(budget), rates, dest_key)
             send_messages(sender, messages)
+
+            # İnteraktif Takip Et listesi
+            from wa_sender import send_watch_list
+            wl_result = send_watch_list(sender, tours[:10], float(budget), dest_key)
+            if not wl_result:
+                log.warning("send_watch_list başarısız")
         except Exception as e:
             log.exception(f"Tur arama hatası: {e}")
             send_text(sender, f"❌ Hata oluştu: {str(e)[:150]}")

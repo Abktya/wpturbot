@@ -58,9 +58,12 @@ def send_watch_list(to: str, tours: list[dict], target_gbp: float, dest_key: str
 
     rows = []
     for i, t in enumerate(tours[:10]):
-        diff  = t['price_gbp'] - target_gbp
-        sign  = '+' if diff >= 0 else ''
-        title = f"£{t['price_gbp']:.0f} ({sign}£{diff:.0f}) — {t['name'][:25]}"[:24]
+        diff     = t['price_gbp'] - target_gbp
+        sign     = '+' if diff >= 0 else ''
+        price_s  = f"£{t['price_gbp']:.0f}({sign}£{int(abs(diff))})"  # £692(-£8)
+        name_s   = t['name'].replace('Turu','').replace('Özel','').strip()
+        avail    = 24 - len(price_s) - 1
+        title    = f"{price_s} {name_s[:avail]}" if avail > 0 else price_s[:24]
 
         # Tarih bilgisi
         desc = t.get('start_fmt', '') or t.get('start_date', '')[:7]
