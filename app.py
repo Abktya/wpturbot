@@ -300,35 +300,51 @@ async def _handle_watch_selection(sender: str, reply_id: str):
     from scraper import DEST_CONFIG
 
     try:
-        parts = reply_id.split('|', 3)
-        if len(parts) < 4:
+        # Format: watch|shortid|budget  veya eski format watch|source|url|budget
+        parts = reply_id.split('|')
+        if len(parts) < 3:
             send_text(sender, "❌ Geçersiz seçim.")
             return
 
-        _, source, tour_url, budget_str = parts
-        budget_gbp = float(budget_str)
+        from wa_sender import _watch_cache
+        short_id   = parts[1]
+        budget_gbp = float(parts[2])
 
-        # Destinasyonu URL'den çıkar
-        dest_key = 'londra'  # varsayılan
-        for dk in DEST_CONFIG:
-            if dk in tour_url.lower() or any(a in tour_url.lower() for a in DEST_CONFIG[dk].get('aliases',[])):
-                dest_key = dk
-                break
+        # Cache'ten tur bilgisini al
+        cached = _watch_cache.get(short_id)
+        if cached:
+            tour_url  = cached['url']
+            tour_name = cached['name']
+            source    = cached['source']
+            dest_key  = cached.get('dest_key', 'londra')
+        else:
+            # Eski format fallback: watch|source|url|budget
+            if len(parts) >= 4:
+                source   = parts[1]
+                tour_url = parts[2]
+                budget_gbp = float(parts[3])
+                import re
+                slug = tour_url.rstrip('/').split('/')[-1].split('?')[0]
+                slug = re.sub(r'-tr-\d+$', '', slug)
+                tour_name = slug.replace('-',' ').title()[:60]
+                dest_key  = 'londra'
+            else:
+                send_text(sender, "❌ Tur bilgisi bulunamadı. Tekrar arama yap.")
+                return
 
-        # Tur ismini URL'den türet
-        slug = tour_url.rstrip('/').split('/')[-1].split('?')[0]
-        import re
-        slug = re.sub(r'-tr-\d+$', '', slug)
-        tour_name = slug.replace('-', ' ').title()[:60]
+        # Keyword için tur isminden anlamlı kelimeler
+        import re as _re
+        kw_words = [w for w in tour_name.lower().split()
+                    if w not in ('turu','turu','özel','ile','ve','bir','london','londra') and len(w) > 3]
+        keyword = ' '.join(kw_words[:2])
 
-        # Takip ekle — ay filtresi yok (genel takip)
         label = f"{tour_name[:40]} — £{budget_gbp:.0f}"
         ok, config_id, _ = add_watch_config(
             agent_phone=sender,
             dest_key=dest_key,
-            month_num=None,       # tüm tarihler
+            month_num=None,
             budget_gbp=budget_gbp,
-            keyword=slug.replace('-',' ')[:30],
+            keyword=keyword,
             label=label,
         )
 
