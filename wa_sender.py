@@ -43,8 +43,19 @@ def send_messages(to: str, messages: list[str]) -> None:
         send_text(to, _html_to_wa(msg))
 
 
-# Kısa ID → tam tur verisi cache
-_watch_cache: dict[str, dict] = {}
+# Kısa ID → tam tur verisi cache (DB'den yüklenir, restart'ta korunur)
+def _load_cache() -> dict:
+    try:
+        from tracker import load_pending_watches
+        data = load_pending_watches()
+        if data:
+            log.info(f"Watch cache yüklendi: {len(data)} kayıt")
+        return data
+    except Exception as e:
+        log.warning(f"Cache yüklenemedi: {e}")
+        return {}
+
+_watch_cache: dict[str, dict] = _load_cache()
 
 
 def send_watch_list(to: str, tours: list[dict], target_gbp: float, dest_key: str) -> bool:
@@ -81,8 +92,8 @@ def send_watch_list(to: str, tours: list[dict], target_gbp: float, dest_key: str
         short_id = hashlib.md5(t['url'].encode()).hexdigest()[:8]
         btn_id   = f"watch|{short_id}|{target_gbp:.0f}"   # max ~25 char
 
-        # Tam tur verisini cache'e al
-        _watch_cache[short_id] = {
+        # Cache + DB'ye kaydet (restart'ta korunur)
+        tour_data = {
             'name':       t['name'],
             'url':        t['url'],
             'source':     t['source'],
@@ -90,6 +101,12 @@ def send_watch_list(to: str, tours: list[dict], target_gbp: float, dest_key: str
             'start_date': t.get('start_date',''),
             'dest_key':   dest_key,
         }
+        _watch_cache[short_id] = tour_data
+        try:
+            from tracker import save_pending_watch
+            save_pending_watch(short_id, tour_data)
+        except Exception as _e:
+            log.warning(f"Cache DB kayıt hatası: {_e}")
 
         rows.append({"id": btn_id, "title": title, "description": desc})
 

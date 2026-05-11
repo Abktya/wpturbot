@@ -57,6 +57,17 @@ def init_db():
             FOREIGN KEY(config_id) REFERENCES watch_configs(id)
         );
 
+        CREATE TABLE IF NOT EXISTS pending_watches (
+            short_id    TEXT PRIMARY KEY,
+            name        TEXT NOT NULL,
+            url         TEXT NOT NULL,
+            source      TEXT NOT NULL,
+            price_gbp   REAL,
+            start_date  TEXT DEFAULT '',
+            dest_key    TEXT DEFAULT 'londra',
+            created_at  TEXT DEFAULT (datetime('now'))
+        );
+
         CREATE TABLE IF NOT EXISTS price_history (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             result_id    INTEGER NOT NULL,
@@ -155,6 +166,36 @@ def update_config_check_time(config_id: int):
         conn.execute(
             "UPDATE watch_configs SET last_check=? WHERE id=?",
             (datetime.now().isoformat(), config_id)
+        )
+
+
+def save_pending_watch(short_id: str, data: dict):
+    """Watch cache item'ını DB'ye kaydet."""
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO pending_watches
+                (short_id, name, url, source, price_gbp, start_date, dest_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (short_id, data.get('name',''), data.get('url',''),
+              data.get('source',''), data.get('price_gbp',0),
+              data.get('start_date',''), data.get('dest_key','londra')))
+
+
+def load_pending_watches() -> dict:
+    """DB'den watch cache'i yükle."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM pending_watches ORDER BY created_at DESC LIMIT 500"
+        ).fetchall()
+    return {r['short_id']: dict(r) for r in rows}
+
+
+def clean_old_pending(hours: int = 48):
+    """48 saatten eski pending kayıtları temizle."""
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM pending_watches WHERE created_at < datetime('now', ?)",
+            (f'-{hours} hours',)
         )
 
 
