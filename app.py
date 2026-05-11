@@ -232,15 +232,24 @@ async def _handle_async(sender: str, text: str):
         dest_list = '\n'.join(f"  {v['flag']} {k}" for k, v in DEST_CONFIG.items())
         send_text(sender,
             "✈️ *Tur Bulucu Bot*\n\n"
-            "*Tur fiyatı ara:*\n"
-            "  londra 560\n"
-            "  almanya 799\n"
-            "  paris 650\n\n"
-            "*Aktivite & gezi bul:*\n"
-            "  londra aktivite\n"
-            "  paris gezi\n\n"
-            f"Destinasyonlar:\n{dest_list}\n\n"
-            "Fiyat £ cinsindendir (kişi başı)."
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "*🔍 Tur Fiyatı Ara:*\n"
+            "  _londra 560_\n"
+            "  _almanya 799_\n"
+            "  _paris 650_\n\n"
+            "*🎯 Aktivite & Gezi:*\n"
+            "  _londra aktivite_\n"
+            "  _paris gezi_\n\n"
+            "*🔔 Fiyat Takibi:*\n"
+            "Tur aramasından sonra *Takip Et* listesinden\n"
+            "seçim yap — fiyat değişince bildirim gelir.\n\n"
+            "Manuel takip:\n"
+            "  _takip et: londra masalı eylül 799_\n"
+            "  _takipler_ → aktif takip listesi\n"
+            "  _takip sil 1_ → takibi kaldır\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"*Destinasyonlar:*\n{dest_list}\n\n"
+            "_Fiyatlar £ cinsindendir (kişi başı)._"
         )
         return
 
@@ -275,6 +284,66 @@ async def _handle_async(sender: str, text: str):
             send_text(sender, f"❌ Hata oluştu: {str(e)[:150]}")
 
 
+async def _handle_watch_selection(sender: str, reply_id: str):
+    """
+    Kullanıcı 'Takip Et' listesinden bir tur seçtiğinde çağrılır.
+    reply_id formatı: watch|source|url|budget
+    """
+    from wa_sender import send_text
+    from tracker import add_watch_config, MONTH_TR_REV
+    from scraper import DEST_CONFIG
+
+    try:
+        parts = reply_id.split('|', 3)
+        if len(parts) < 4:
+            send_text(sender, "❌ Geçersiz seçim.")
+            return
+
+        _, source, tour_url, budget_str = parts
+        budget_gbp = float(budget_str)
+
+        # Destinasyonu URL'den çıkar
+        dest_key = 'londra'  # varsayılan
+        for dk in DEST_CONFIG:
+            if dk in tour_url.lower() or any(a in tour_url.lower() for a in DEST_CONFIG[dk].get('aliases',[])):
+                dest_key = dk
+                break
+
+        # Tur ismini URL'den türet
+        slug = tour_url.rstrip('/').split('/')[-1].split('?')[0]
+        import re
+        slug = re.sub(r'-tr-\d+$', '', slug)
+        tour_name = slug.replace('-', ' ').title()[:60]
+
+        # Takip ekle — ay filtresi yok (genel takip)
+        label = f"{tour_name[:40]} — £{budget_gbp:.0f}"
+        ok, config_id, _ = add_watch_config(
+            agent_phone=sender,
+            dest_key=dest_key,
+            month_num=None,       # tüm tarihler
+            budget_gbp=budget_gbp,
+            keyword=slug.replace('-',' ')[:30],
+            label=label,
+        )
+
+        if ok:
+            cfg = DEST_CONFIG.get(dest_key, {})
+            send_text(sender,
+                f"✅ *Takip #{config_id} Oluşturuldu*\n\n"
+                f"{cfg.get('flag','✈️')} {tour_name}\n"
+                f"💰 Bütçe: £{budget_gbp:.0f}\n"
+                f"🌐 Kaynak: {source}\n\n"
+                f"🔔 Fiyat değişince seni haberdar edeceğim.\n"
+                f"_(08:00 / 14:00 / 20:00 kontrolü)_"
+            )
+        else:
+            send_text(sender, "❌ Takip eklenemedi. Tekrar dene.")
+
+    except Exception as e:
+        log.exception(f"_handle_watch_selection hatası: {e}")
+        send_text(sender, "❌ Bir hata oluştu.")
+
+
 def _run_async(coro):
     try:
         loop = asyncio.get_event_loop()
@@ -294,12 +363,32 @@ def webhook():
         if not msg:
             return jsonify({'status': 'no_message'}), 200
         m = msg[0]
-        if m.get('type') == 'text':
-            text = m.get('text',{}).get('body','').strip()
-            sender = m.get('from','')
+        msg_type = m.get('type', '')
+        sender   = m.get('from', '')
+
+        if msg_type == 'text':
+            text = m.get('text', {}).get('body', '').strip()
             if text:
                 log.info(f"Gelen | {sender}: {text[:80]}")
                 _run_async(_handle_async(sender, text))
+
+        elif msg_type == 'interactive':
+            inter = m.get('interactive', {})
+            inter_type = inter.get('type', '')
+
+            # List seçimi veya button tıklaması
+            if inter_type == 'list_reply':
+                reply_id    = inter.get('list_reply', {}).get('id', '')
+                reply_title = inter.get('list_reply', {}).get('title', '')
+            elif inter_type == 'button_reply':
+                reply_id    = inter.get('button_reply', {}).get('id', '')
+                reply_title = inter.get('button_reply', {}).get('title', '')
+            else:
+                reply_id = ''
+
+            if reply_id.startswith('watch|'):
+                log.info(f"Takip seçimi | {sender}: {reply_id[:80]}")
+                _run_async(_handle_watch_selection(sender, reply_id))
     except Exception as e:
         log.exception(f"Webhook hatası: {e}")
     return jsonify({'status': 'ok'}), 200
