@@ -1,0 +1,27 @@
+# Virtual environment
+wpturbot/
+
+# Environment variables (GİZLİ - asla commit etme)
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Logs
+*.log
+/tmp/
+
+# Service files
+*.service
+install_service.sh
+setup.sh
+cloudflare-config*.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
