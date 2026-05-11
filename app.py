@@ -130,97 +130,102 @@ async def _handle_async(sender: str, text: str):
     # 3. Aksiyonu çalıştır
     # ── TAKİP EKLE ──────────────────────────────────────
     if action == 'TAKIP_EKLE':
-        from tracker import add_watch, list_watches
-        from price_checker import fetch_price
+        from claude_router import parse_watch_command
+        from tracker import add_watch_config, MONTH_TR_REV
+        from scraper import DEST_CONFIG
 
-        # URL veya slug çıkar
-        import re
-        url_m = re.search(r'(https?://[^\s]+|/[a-z0-9\-]+-tr-\d+[^\s]*)', text, re.IGNORECASE)
-        if not url_m:
+        send_text(sender, "⏳ Takip kriterleri analiz ediliyor...")
+
+        # Komutu parse et
+        parsed = parse_watch_command(text)
+        dest_key   = parsed.get('dest_key')
+        month_num  = parsed.get('month_num')
+        budget_gbp = parsed.get('budget_gbp')
+        keyword    = parsed.get('keyword', '')
+        label      = parsed.get('label', text[:50])
+
+        if not dest_key or dest_key not in DEST_CONFIG:
             send_text(sender,
-                "📌 *Takip Ekle*\n\n"
-                "Tur URL'sini gönder:\n"
-                "  _takip et: https://www.tatilsepeti.com/..._\n\n"
-                "Veya listing'den 'Tura Git' linkini kopyala."
+                "❌ Destinasyon anlaşılamadı.\n\n"
+                "Örnek:\n"
+                "  *takip et: londra eylül 799*\n"
+                "  *takip et: almanya masalı turu ağustos 900*"
             )
             return
 
-        raw_url = url_m.group(1)
-        # Source belirle
-        if 'tatilsepeti' in raw_url:
-            source = 'tatilsepeti'
-        elif 'jollytur' in raw_url:
-            source = 'jollytur'
-        elif 'etstur' in raw_url:
-            source = 'etstur'
-        else:
-            send_text(sender, "❌ Desteklenmeyen site. Tatilsepeti, Jollytur veya Etstur linki gönder.")
+        ok, config_id, _ = add_watch_config(
+            sender, dest_key, month_num, budget_gbp, keyword, label
+        )
+        if not ok:
+            send_text(sender, "❌ Takip oluşturulamadı.")
             return
 
-        send_text(sender, "⏳ Güncel fiyat kontrol ediliyor...")
-        price, name = fetch_price(raw_url, source)
-        if price <= 0:
-            send_text(sender, "❌ Fiyat çekilemedi. URL'yi kontrol et.")
-            return
+        # Özet mesaj
+        cfg      = DEST_CONFIG[dest_key]
+        month_s  = MONTH_TR_REV.get(month_num, '') if month_num else 'Tüm aylar'
+        budget_s = f"£{budget_gbp:.0f}" if budget_gbp else 'Sınırsız'
+        kw_s     = f"\n🔤 Keyword: _{keyword}_" if keyword else ''
 
-        from scraper import _rates_store
-        eur_gbp = _rates_store.get('EUR_GBP', 0.866)
-        gbp = round(price * eur_gbp)
-
-        ok, msg = add_watch(sender, raw_url, name or raw_url, source, price)
         send_text(sender,
-            f"{msg}\n\n"
-            f"💰 Güncel fiyat: £{gbp} ({price:.0f}€)\n"
-            f"🔔 Fiyat %3 değişince seni haberdar edeceğim."
+            f"✅ *Takip #{config_id} Oluşturuldu*\n\n"
+            f"{cfg['flag']} Destinasyon: *{cfg['label']}*\n"
+            f"📅 Ay filtresi: *{month_s}*\n"
+            f"💰 Bütçe: *{budget_s}*{kw_s}\n\n"
+            f"🔔 Günde 3 kez kontrol edilecek (08:00, 14:00, 20:00)\n"
+            f"📊 %2 ve üzeri fiyat değişiminde bildirim gelecek.\n\n"
+            f"_İlk sonuçlar sonraki kontrol döngüsünde toplanacak._"
         )
         return
 
     # ── TAKİP LİSTESİ ─────────────────────────────────
     if action == 'TAKIPLER':
-        from tracker import list_watches
-        from scraper import _rates_store
-        eur_gbp = _rates_store.get('EUR_GBP', 0.866)
+        from tracker import list_configs, MONTH_TR_REV
+        from scraper import DEST_CONFIG
 
-        watches = list_watches(sender)
-        if not watches:
-            send_text(sender, "📋 Aktif takibiniz yok.\n\n_Takip eklemek için tur linkini gönder._")
+        configs = list_configs(sender)
+        if not configs:
+            send_text(sender,
+                "📋 Aktif takibiniz yok.\n\n"
+                "Örnek:\n"
+                "  *takip et: londra eylül 799*\n"
+                "  *takip et: almanya masalı turu ağustos 900*"
+            )
             return
 
-        lines = [f"📋 *Aktif Takipler ({len(watches)})*\n"]
-        for i, w in enumerate(watches, 1):
-            gbp = round(w['last_price'] * eur_gbp) if w['last_price'] else 0
-            last = w['last_check'][:10] if w['last_check'] else '?'
+        lines = [f"📋 *Aktif Takipler ({len(configs)})*\n"]
+        for c in configs:
+            cfg     = DEST_CONFIG.get(c['dest_key'], {})
+            flag    = cfg.get('flag','✈️')
+            month_s = MONTH_TR_REV.get(c['month_num'],'Tüm aylar') if c['month_num'] else 'Tüm aylar'
+            budget_s = f"£{c['budget_gbp']:.0f}" if c['budget_gbp'] else 'Sınırsız'
+            kw_s    = f" | _{c['keyword']}_" if c['keyword'] else ''
+            last    = c['last_check'][:10] if c['last_check'] else 'Henüz kontrol yok'
             lines.append(
-                f"{i}. *{w['tour_name'][:45]}*\n"
-                f"   💰 £{gbp} | 🌐 {w['source']} | 📅 {last}\n"
-                f"   🔗 {w['tour_url'][:60]}\n"
+                f"\n*#{c['id']}* {flag} {c['label']}\n"
+                f"   📅 {month_s} | 💰 {budget_s}{kw_s}\n"
+                f"   📊 {c['tour_count']} tur takipte | Son: {last}"
             )
 
+        lines.append("\n\n_Silmek için: takip sil 1_")
         send_text(sender, '\n'.join(lines))
         return
 
     # ── TAKİP SİL ─────────────────────────────────────
     if action == 'TAKIP_SIL':
-        from tracker import list_watches, remove_watch
+        from tracker import list_configs, remove_config
         import re
 
-        url_m = re.search(r'(https?://[^\s]+|/[a-z0-9\-]+-tr-\d+[^\s]*)', text, re.IGNORECASE)
-        if url_m:
-            ok, msg = remove_watch(sender, url_m.group(1))
+        num_m = re.search(r'\b(\d+)\b', text)
+        if num_m:
+            config_id = int(num_m.group(1))
+            ok, msg = remove_config(sender, config_id)
             send_text(sender, msg)
         else:
-            # Numara ile sil (1, 2, 3...)
-            num_m = re.search(r'\b([1-9]\d?)\b', text)
-            if num_m:
-                watches = list_watches(sender)
-                idx = int(num_m.group(1)) - 1
-                if 0 <= idx < len(watches):
-                    ok, msg = remove_watch(sender, watches[idx]['tour_url'])
-                    send_text(sender, msg)
-                else:
-                    send_text(sender, "❌ Geçersiz numara. 'takipler' yazarak listeyi gör.")
+            configs = list_configs(sender)
+            if not configs:
+                send_text(sender, "Aktif takip yok.")
             else:
-                send_text(sender, "Silmek istediğin takibin URL'sini veya numarasını gönder.")
+                send_text(sender, "Hangi takibi silmek istiyorsun? Numara gönder.\n_takipler_ yazarak listeyi gör.")
         return
 
     if action == 'YARDIM':
