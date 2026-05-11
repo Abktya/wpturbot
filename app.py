@@ -9,11 +9,15 @@ Mesaj akışı:
 import os, asyncio, logging
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
+from scheduler import start_scheduler
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 logging.basicConfig(format='%(asctime)s [%(levelname)s] %(name)s: %(message)s', level=logging.INFO)
 log = logging.getLogger(__name__)
 app = Flask(__name__)
+
+# Fiyat takip scheduler'ı başlat
+_scheduler = start_scheduler()
 
 VERIFY_TOKEN = os.getenv('WEBHOOK_VERIFY_TOKEN', 'wpturbot_verify_2024')
 
@@ -24,6 +28,9 @@ AKTIVITE_KW = ['aktivite','aktiviteler','gezi','gezilecek','yapilacak','yapılac
 
 # ─── Yardım anahtar kelimeleri ───
 YARDIM_KW = ['merhaba','selam','hi','hello','start','/start','yardim','yardım','help','neler yapabilirsin']
+TAKIP_KW = ['takip et','takibe al','takip ekle','takip:','watch']
+TAKIPLER_KW = ['takipler','takip listesi','takiplerimi göster','watches']
+TAKIP_SIL_KW = ['takip sil','takibi sil','takipten çıkar','unwatch']
 
 
 @app.get('/webhook')
@@ -74,6 +81,15 @@ def _parse_direct(text: str):
         dest = next((resolve_dest(w) for w in parts if resolve_dest(w)), 'londra')
         return ('AKTIVITE', dest, None)
 
+    # Takip komutları
+    tl = text.lower()
+    if any(kw in tl for kw in TAKIP_SIL_KW):
+        return ('TAKIP_SIL', None, None)
+    if any(kw in tl for kw in TAKIPLER_KW):
+        return ('TAKIPLER', None, None)
+    if any(kw in tl for kw in TAKIP_KW):
+        return ('TAKIP_EKLE', None, None)
+
     # Yardım
     if any(kw in text.lower() for kw in YARDIM_KW):
         return ('YARDIM', None, None)
@@ -112,6 +128,101 @@ async def _handle_async(sender: str, text: str):
             return  # Claude mesajı zaten gönderildi
 
     # 3. Aksiyonu çalıştır
+    # ── TAKİP EKLE ──────────────────────────────────────
+    if action == 'TAKIP_EKLE':
+        from tracker import add_watch, list_watches
+        from price_checker import fetch_price
+
+        # URL veya slug çıkar
+        import re
+        url_m = re.search(r'(https?://[^\s]+|/[a-z0-9\-]+-tr-\d+[^\s]*)', text, re.IGNORECASE)
+        if not url_m:
+            send_text(sender,
+                "📌 *Takip Ekle*\n\n"
+                "Tur URL'sini gönder:\n"
+                "  _takip et: https://www.tatilsepeti.com/..._\n\n"
+                "Veya listing'den 'Tura Git' linkini kopyala."
+            )
+            return
+
+        raw_url = url_m.group(1)
+        # Source belirle
+        if 'tatilsepeti' in raw_url:
+            source = 'tatilsepeti'
+        elif 'jollytur' in raw_url:
+            source = 'jollytur'
+        elif 'etstur' in raw_url:
+            source = 'etstur'
+        else:
+            send_text(sender, "❌ Desteklenmeyen site. Tatilsepeti, Jollytur veya Etstur linki gönder.")
+            return
+
+        send_text(sender, "⏳ Güncel fiyat kontrol ediliyor...")
+        price, name = fetch_price(raw_url, source)
+        if price <= 0:
+            send_text(sender, "❌ Fiyat çekilemedi. URL'yi kontrol et.")
+            return
+
+        from scraper import _rates_store
+        eur_gbp = _rates_store.get('EUR_GBP', 0.866)
+        gbp = round(price * eur_gbp)
+
+        ok, msg = add_watch(sender, raw_url, name or raw_url, source, price)
+        send_text(sender,
+            f"{msg}\n\n"
+            f"💰 Güncel fiyat: £{gbp} ({price:.0f}€)\n"
+            f"🔔 Fiyat %3 değişince seni haberdar edeceğim."
+        )
+        return
+
+    # ── TAKİP LİSTESİ ─────────────────────────────────
+    if action == 'TAKIPLER':
+        from tracker import list_watches
+        from scraper import _rates_store
+        eur_gbp = _rates_store.get('EUR_GBP', 0.866)
+
+        watches = list_watches(sender)
+        if not watches:
+            send_text(sender, "📋 Aktif takibiniz yok.\n\n_Takip eklemek için tur linkini gönder._")
+            return
+
+        lines = [f"📋 *Aktif Takipler ({len(watches)})*\n"]
+        for i, w in enumerate(watches, 1):
+            gbp = round(w['last_price'] * eur_gbp) if w['last_price'] else 0
+            last = w['last_check'][:10] if w['last_check'] else '?'
+            lines.append(
+                f"{i}. *{w['tour_name'][:45]}*\n"
+                f"   💰 £{gbp} | 🌐 {w['source']} | 📅 {last}\n"
+                f"   🔗 {w['tour_url'][:60]}\n"
+            )
+
+        send_text(sender, '\n'.join(lines))
+        return
+
+    # ── TAKİP SİL ─────────────────────────────────────
+    if action == 'TAKIP_SIL':
+        from tracker import list_watches, remove_watch
+        import re
+
+        url_m = re.search(r'(https?://[^\s]+|/[a-z0-9\-]+-tr-\d+[^\s]*)', text, re.IGNORECASE)
+        if url_m:
+            ok, msg = remove_watch(sender, url_m.group(1))
+            send_text(sender, msg)
+        else:
+            # Numara ile sil (1, 2, 3...)
+            num_m = re.search(r'\b([1-9]\d?)\b', text)
+            if num_m:
+                watches = list_watches(sender)
+                idx = int(num_m.group(1)) - 1
+                if 0 <= idx < len(watches):
+                    ok, msg = remove_watch(sender, watches[idx]['tour_url'])
+                    send_text(sender, msg)
+                else:
+                    send_text(sender, "❌ Geçersiz numara. 'takipler' yazarak listeyi gör.")
+            else:
+                send_text(sender, "Silmek istediğin takibin URL'sini veya numarasını gönder.")
+        return
+
     if action == 'YARDIM':
         dest_list = '\n'.join(f"  {v['flag']} {k}" for k, v in DEST_CONFIG.items())
         send_text(sender,
